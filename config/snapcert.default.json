@@ -1,0 +1,10 @@
+{
+  "DaysBeforeExpiry": 30,
+  "CertificateTemplates": ["Computer"],
+  "CertStorePath": "Cert:\\LocalMachine\\My",
+  "LogFilePath": "C:\\ProgramData\\SnapCert\\snapcert.log",
+  "LogToEventLog": true,
+  "EventLogSource": "SnapCert",
+  "ScheduleTaskName": "SnapCert-AutoRenew",
+  "ScheduleRunTime": "02:00"
+}
