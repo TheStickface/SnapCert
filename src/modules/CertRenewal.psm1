@@ -5,24 +5,38 @@ function New-CertRenewalRequest {
 
         [string]$InfPath = "$env:TEMP\snapcert_renewal.inf",
 
-        [int]$KeyLength = 2048
+        [int]$KeyLength = 2048,
+
+        [string]$FQDN = ([System.Net.Dns]::GetHostEntry('').HostName),
+
+        [string]$ShortName = $env:COMPUTERNAME,
+
+        [string]$IPAddress = (
+            [System.Net.Dns]::GetHostAddresses([System.Net.Dns]::GetHostName()) |
+            Where-Object { $_.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork } |
+            Select-Object -First 1 -ExpandProperty IPAddressToString
+        )
     )
 
-    $inf = @"
-[Version]
-Signature = "`$Windows NT`$"
-
-[NewRequest]
-Subject = ""
-MachineKeySet = TRUE
-KeyLength = $KeyLength
-KeySpec = 1
-Exportable = FALSE
-RequestType = PKCS10
-
-[RequestAttributes]
-CertificateTemplate = $Template
-"@
+    $inf = "[Version]`r`n"
+    $inf += "Signature = `"`$Windows NT`$`"`r`n"
+    $inf += "`r`n"
+    $inf += "[NewRequest]`r`n"
+    $inf += "Subject = `"CN=$FQDN`"`r`n"
+    $inf += "MachineKeySet = TRUE`r`n"
+    $inf += "KeyLength = $KeyLength`r`n"
+    $inf += "KeySpec = 1`r`n"
+    $inf += "Exportable = FALSE`r`n"
+    $inf += "RequestType = PKCS10`r`n"
+    $inf += "`r`n"
+    $inf += "[RequestAttributes]`r`n"
+    $inf += "CertificateTemplate = $Template`r`n"
+    $inf += "`r`n"
+    $inf += "[Extensions]`r`n"
+    $inf += "2.5.29.17 = `"{text}`"`r`n"
+    $inf += "_continue_ = `"dns=$ShortName&`"`r`n"
+    $inf += "_continue_ = `"dns=$FQDN&`"`r`n"
+    $inf += "_continue_ = `"ipaddress=$IPAddress&`"`r`n"
 
     $inf | Out-File -FilePath $InfPath -Encoding ASCII
 }
