@@ -3,6 +3,7 @@
   "CertificateTemplates": ["Computer"],
   "CertStorePath": "Cert:\\LocalMachine\\My",
   "LogFilePath": "C:\\ProgramData\\SnapCert\\snapcert.log",
+  "LogRetentionDays": 90,
   "LogToEventLog": true,
   "EventLogSource": "SnapCert",
   "ScheduleTaskName": "SnapCert-AutoRenew",
