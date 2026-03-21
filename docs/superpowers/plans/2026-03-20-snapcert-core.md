@@ -2,11 +2,29 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a PowerShell-based tool that detects expiring AD CS Computer certificates on domain-joined Windows machines and automatically renews them.
+**Goal:** Build a PowerShell-based tool that detects expiring AD CS Computer certificates on domain-joined Windows servers and automatically renews them, with auditable logging suitable for a CIS-aligned financial institution environment.
 
-**Architecture:** A set of focused PowerShell modules (Scanner, Renewal, Config, Scheduler, Logging) wired together by a main CLI entry point (`SnapCert.ps1`). Configuration is stored in a JSON file. The tool runs on the local machine as the domain computer account, submitting renewal requests directly to the AD CS CA via `certreq`. Scheduling is implemented via Windows Task Scheduler.
+**Architecture:** A set of focused PowerShell modules (Scanner, Renewal, Config, Scheduler, Logging) wired together by a main CLI entry point (`SnapCert.ps1`). Configuration is stored in a JSON file. The tool runs on the local machine as SYSTEM, submitting renewal requests directly to the AD CS issuing CA via `certreq`. Scheduling is implemented via Windows Task Scheduler. Logging writes to both a local rolling log file (90-day retention, self-trimmed) and the Windows Application Event Log for SIEM consumption. A central management server with web dashboard is planned as a separate v2.0 application.
 
-**Tech Stack:** PowerShell 5.1+, Pester 5.x (testing), certreq (certificate requests), Windows Task Scheduler (scheduling), Windows Event Log + file-based logging.
+**Tech Stack:** PowerShell 5.1+, Pester 5.x (testing — requires vendor approval before production use), certreq (certificate requests), Windows Task Scheduler (scheduling), Windows Event Log + self-trimming file-based logging.
+
+---
+
+## Environment & Compliance Constraints
+
+| Concern | Detail |
+|---------|--------|
+| **Target OS** | Windows Server (primary); workstation support deferred |
+| **Execution Policy** | RemoteSigned on servers; AllSigned on workstations (deferred) |
+| **Run-as account** | SYSTEM — standard for SCCM-deployed scheduled tasks |
+| **Compliance framework** | CIS Controls (primary); Tenable/Nessus as vulnerability alignment tool |
+| **Audit trail** | Windows Application Event Log (SIEM-readable); Splunk integration deferred |
+| **CA topology** | Two-tier: offline Root CA + online Issuing CA; single CA across all domains |
+| **CA connectivity** | Target machines reach issuing CA directly (no proxy/CEP) |
+| **Code signing** | Deferred — internal code-signing cert to be provided; RemoteSigned sufficient for servers now |
+| **Deployment** | SCCM for servers; Intune for workstations (deferred) |
+| **Log retention** | 90 days, local machine; tool self-trims its own log file |
+| **Open-source** | Pester (test-only, not deployed to endpoints) — must go through vendor approval process |
 
 ---
 
@@ -91,6 +109,7 @@ Create `config/snapcert.default.json`:
   "CertificateTemplates": ["Computer"],
   "CertStorePath": "Cert:\\LocalMachine\\My",
   "LogFilePath": "C:\\ProgramData\\SnapCert\\snapcert.log",
+  "LogRetentionDays": 90,
   "LogToEventLog": true,
   "EventLogSource": "SnapCert",
   "ScheduleTaskName": "SnapCert-AutoRenew",
@@ -132,7 +151,7 @@ git commit -m "feat: project scaffold, Pester tooling, default config"
 - Create: `src/modules/Logging.psm1`
 - Create: `tests/Logging.Tests.ps1`
 
-Build logging first — every other module depends on it.
+Build logging first — every other module depends on it. This module provides two functions: `Write-SnapCertLog` (write entries to file + Windows Event Log) and `Invoke-SnapCertLogRotation` (trim entries older than the configured retention period). Log format is `yyyy-MM-dd HH:mm:ss [LEVEL] Message` — the timestamp prefix is what rotation parses.
 
 - [ ] **Step 2.1: Write failing tests**
 
@@ -178,6 +197,51 @@ Describe "Write-SnapCertLog" {
         Write-SnapCertLog -Message "second" -Level "INFO" -LogFilePath $script:testLogPath
         $lines = Get-Content $script:testLogPath
         $lines.Count | Should -Be 2
+    }
+}
+
+Describe "Invoke-SnapCertLogRotation" {
+    BeforeEach {
+        $script:testLogPath = "$env:TEMP\snapcert_rotation_$([System.Guid]::NewGuid().ToString('N')).log"
+    }
+    AfterEach {
+        if (Test-Path $script:testLogPath) { Remove-Item $script:testLogPath -Force }
+    }
+
+    It "removes lines older than retention period" {
+        $oldDate = (Get-Date).AddDays(-91).ToString("yyyy-MM-dd HH:mm:ss")
+        $newDate = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+        @("$oldDate [INFO] old entry", "$newDate [INFO] new entry") | Set-Content $script:testLogPath
+
+        Invoke-SnapCertLogRotation -LogFilePath $script:testLogPath -RetentionDays 90
+
+        $lines = Get-Content $script:testLogPath
+        $lines.Count | Should -Be 1
+        $lines[0] | Should -Match "new entry"
+    }
+
+    It "retains lines within retention period" {
+        $recentDate = (Get-Date).AddDays(-30).ToString("yyyy-MM-dd HH:mm:ss")
+        "$recentDate [INFO] recent entry" | Set-Content $script:testLogPath
+
+        Invoke-SnapCertLogRotation -LogFilePath $script:testLogPath -RetentionDays 90
+
+        $lines = Get-Content $script:testLogPath
+        $lines.Count | Should -Be 1
+    }
+
+    It "does not throw if log file does not exist" {
+        { Invoke-SnapCertLogRotation -LogFilePath "$env:TEMP\nonexistent_$([System.Guid]::NewGuid().ToString('N')).log" -RetentionDays 90 } | Should -Not -Throw
+    }
+
+    It "results in empty file when all lines are expired" {
+        $oldDate = (Get-Date).AddDays(-100).ToString("yyyy-MM-dd HH:mm:ss")
+        "$oldDate [INFO] old entry" | Set-Content $script:testLogPath
+
+        Invoke-SnapCertLogRotation -LogFilePath $script:testLogPath -RetentionDays 90
+
+        $lines = Get-Content $script:testLogPath -ErrorAction SilentlyContinue
+        $lines | Should -BeNullOrEmpty
     }
 }
 ```
@@ -231,7 +295,34 @@ function Write-SnapCertLog {
     }
 }
 
-Export-ModuleMember -Function Write-SnapCertLog
+function Invoke-SnapCertLogRotation {
+    param(
+        [string]$LogFilePath = "C:\ProgramData\SnapCert\snapcert.log",
+        [int]$RetentionDays = 90
+    )
+
+    if (-not (Test-Path $LogFilePath)) { return }
+
+    $cutoff = (Get-Date).AddDays(-$RetentionDays)
+    $lines = Get-Content $LogFilePath
+
+    $retained = $lines | Where-Object {
+        if ($_ -match '^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})') {
+            $lineDate = [datetime]::ParseExact($Matches[1], "yyyy-MM-dd HH:mm:ss", $null)
+            $lineDate -ge $cutoff
+        } else {
+            $true  # preserve lines that don't match the timestamp pattern
+        }
+    }
+
+    if ($retained) {
+        $retained | Set-Content $LogFilePath -Encoding UTF8
+    } else {
+        Clear-Content $LogFilePath
+    }
+}
+
+Export-ModuleMember -Function Write-SnapCertLog, Invoke-SnapCertLogRotation
 ```
 
 - [ ] **Step 2.4: Run tests to confirm they pass**
@@ -239,7 +330,7 @@ Export-ModuleMember -Function Write-SnapCertLog
 ```powershell
 Invoke-Pester tests/Logging.Tests.ps1 -Output Normal
 ```
-Expected: `5 tests passed`
+Expected: `9 tests passed`
 
 - [ ] **Step 2.5: Commit**
 
@@ -1115,14 +1206,27 @@ git push origin master
 
 ---
 
-## Deferred (Post-MVP)
+## Versioned Roadmap
 
-These were intentionally excluded from this plan and should be addressed in follow-up plans:
+### v1.0 — This Plan (Core Renewal Engine)
+Local certificate detection, enrollment via certreq, 90-day self-trimming log, Windows Event Log SIEM feed, scheduled task, CLI interface. Deployed to Windows Servers via SCCM.
 
-- **Deployment scope** (local vs centralized management server) — revisit once core tool is validated
-- **Authentication strategy** (service accounts, credential profiles)
-- **Multi-template per-cert routing** — config supports an array; a runtime guard in `SnapCert.ps1` currently rejects multi-template configs with an actionable error. To lift this, `Get-ExpiringCertificates` must return a `TemplateName` field and `Invoke-CertificateRenewal` must accept it per-cert
-- **Targeted renewal by thumbprint** — current implementation does new enrollment (`certreq -new/-submit/-accept`), not targeted renewal of a specific cert. `certreq -renew` by thumbprint is the correct approach but requires a different INF structure and is deferred
-- **`-WhatIf` / `SupportsShouldProcess` propagation** — `SnapCert.ps1` declares `[CmdletBinding()]` without `SupportsShouldProcess`; wiring `-WhatIf` through into module calls requires each module function to accept `ShouldProcess` and is deferred
-- **Linux support** (certreq not available; ACME or openssl-based alternative needed)
-- **Reporting / dashboard** — may drive decision on Python for a management layer
+### v1.1 — Email Alerting
+On renewal failure: send alert via internal SMTP relay. SMTP host/port/from/to configurable in `snapcert.json`. No authentication required (internal relay). New config keys: `SmtpRelay`, `AlertFromAddress`, `AlertToAddresses[]`, `AlertOnFailure` (bool). New module: `src/modules/Alerting.psm1`.
+
+### v2.0 — Central Management Server + Web Dashboard
+Separate application (separate plan). Management server aggregates certificate health data from all endpoints. Web dashboard provides fleet-wide visibility. Technology TBD (PowerShell + IIS, or lightweight web framework). Will revisit Python vs PowerShell for this layer. Data collection mechanism TBD (WinRM pull vs agent push vs SCCM inventory).
+
+### Future / Low Priority
+| Item | Notes |
+|------|-------|
+| **Code signing** | Internal cert to be provided. Scripts signed for `AllSigned` enforcement. Required before workstation deployment. |
+| **SCCM deployment package** | Wrap SnapCert as an SCCM application/script package with detection method |
+| **Tenable SC hook** | Expose certificate health data in a format consumable by Tenable Security Center scans |
+| **Splunk integration** | Direct HEC forwarding from Logging module; very low priority while Event Log SIEM is sufficient |
+| **Multi-template per-cert routing** | Config supports array; runtime guard rejects it today. Requires `TemplateName` field on scanner output and per-cert routing in renewal loop |
+| **Targeted renewal by thumbprint** | Current impl is new enrollment. `certreq -renew` by thumbprint is the correct long-term approach |
+| **Workstation support** | Intune deployment, AllSigned execution policy, code signing required first |
+| **Linux support** | certreq not available; ACME or openssl-based path needed |
+| **`-WhatIf` / `SupportsShouldProcess`** | Declared but not propagated through module calls; deferred |
+| **Pester vendor approval** | Required before test suite runs in production pipeline; Pester is test-only, not deployed to endpoints |
