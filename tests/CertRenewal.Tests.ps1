@@ -26,6 +26,38 @@ Describe "New-CertRenewalRequest" {
         $content | Should -Match "MachineKeySet = TRUE"
         Remove-Item $infPath -Force
     }
+
+    It "INF Subject contains the FQDN as CN" {
+        $infPath = "$env:TEMP\test_renewal_$([System.Guid]::NewGuid().ToString('N')).inf"
+        New-CertRenewalRequest -Template "Computer" -InfPath $infPath -FQDN "srv01.corp.local" -ShortName "SRV01" -IPAddress "10.0.0.1"
+        $content = Get-Content $infPath -Raw
+        $content | Should -Match 'Subject = "CN=srv01\.corp\.local"'
+        Remove-Item $infPath -Force
+    }
+
+    It "INF SAN includes the short name as DNS" {
+        $infPath = "$env:TEMP\test_renewal_$([System.Guid]::NewGuid().ToString('N')).inf"
+        New-CertRenewalRequest -Template "Computer" -InfPath $infPath -FQDN "srv01.corp.local" -ShortName "SRV01" -IPAddress "10.0.0.1"
+        $content = Get-Content $infPath -Raw
+        $content | Should -Match "dns=SRV01"
+        Remove-Item $infPath -Force
+    }
+
+    It "INF SAN includes the FQDN as DNS" {
+        $infPath = "$env:TEMP\test_renewal_$([System.Guid]::NewGuid().ToString('N')).inf"
+        New-CertRenewalRequest -Template "Computer" -InfPath $infPath -FQDN "srv01.corp.local" -ShortName "SRV01" -IPAddress "10.0.0.1"
+        $content = Get-Content $infPath -Raw
+        $content | Should -Match "dns=srv01\.corp\.local"
+        Remove-Item $infPath -Force
+    }
+
+    It "INF SAN includes the IP address" {
+        $infPath = "$env:TEMP\test_renewal_$([System.Guid]::NewGuid().ToString('N')).inf"
+        New-CertRenewalRequest -Template "Computer" -InfPath $infPath -FQDN "srv01.corp.local" -ShortName "SRV01" -IPAddress "10.0.0.1"
+        $content = Get-Content $infPath -Raw
+        $content | Should -Match "ipaddress=10\.0\.0\.1"
+        Remove-Item $infPath -Force
+    }
 }
 
 Describe "Invoke-CertificateRenewal" {
