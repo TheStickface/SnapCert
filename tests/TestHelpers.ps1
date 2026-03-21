@@ -14,6 +14,7 @@ function New-MockCertificate {
         Oid    = [PSCustomObject]@{ FriendlyName = "Certificate Template Name" }
         _value = $TemplateName
     }
+    # Note: $t (multi-line flag) is intentionally ignored. CertScanner always calls Format($false).
     $mockExt | Add-Member -MemberType ScriptMethod -Name Format -Value { param($t) return $this._value } -Force
 
     return [PSCustomObject]@{
