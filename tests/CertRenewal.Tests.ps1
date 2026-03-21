@@ -27,3 +27,47 @@ Describe "New-CertRenewalRequest" {
         Remove-Item $infPath -Force
     }
 }
+
+Describe "Invoke-CertificateRenewal" {
+    It "returns success without calling certreq when DryRun is true" {
+        # DryRun short-circuits — no Start-Process call. Verify the result shape only.
+        $result = Invoke-CertificateRenewal -Template "Computer" -DryRun $true
+        $result.Success | Should -Be $true
+        $result.Message | Should -Match "DryRun"
+    }
+
+    It "returns success result when all certreq stages exit 0" {
+        Mock New-CertRenewalRequest {} -ModuleName CertRenewal
+        Mock Start-Process {
+            return [PSCustomObject]@{ ExitCode = 0 }
+        } -ModuleName CertRenewal
+
+        $result = Invoke-CertificateRenewal -Template "Computer" -DryRun $false
+        $result.Success | Should -Be $true
+    }
+
+    It "returns failure when certreq -new exits non-zero" {
+        Mock New-CertRenewalRequest {} -ModuleName CertRenewal
+        Mock Start-Process {
+            return [PSCustomObject]@{ ExitCode = 1 }
+        } -ModuleName CertRenewal
+
+        $result = Invoke-CertificateRenewal -Template "Computer" -DryRun $false
+        $result.Success | Should -Be $false
+        $result.Message | Should -Match "certreq -new failed"
+    }
+
+    It "returns failure when certreq -submit exits non-zero" {
+        Mock New-CertRenewalRequest {} -ModuleName CertRenewal
+        $callCount = 0
+        Mock Start-Process {
+            $script:callCount++
+            if ($script:callCount -eq 1) { return [PSCustomObject]@{ ExitCode = 0 } }
+            return [PSCustomObject]@{ ExitCode = 1 }
+        } -ModuleName CertRenewal
+
+        $result = Invoke-CertificateRenewal -Template "Computer" -DryRun $false
+        $result.Success | Should -Be $false
+        $result.Message | Should -Match "certreq -submit failed"
+    }
+}
