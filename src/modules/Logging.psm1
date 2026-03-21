@@ -24,15 +24,20 @@ function Write-SnapCertLog {
     Add-Content -Path $LogFilePath -Value $entry
 
     if ($LogToEventLog) {
-        $eventType = switch ($Level) {
-            "ERROR"   { "Error" }
-            "WARNING" { "Warning" }
-            default   { "Information" }
+        try {
+            $eventType = switch ($Level) {
+                "ERROR"   { "Error" }
+                "WARNING" { "Warning" }
+                default   { "Information" }
+            }
+            if (-not [System.Diagnostics.EventLog]::SourceExists($EventLogSource)) {
+                New-EventLog -LogName Application -Source $EventLogSource -ErrorAction Stop
+            }
+            Write-EventLog -LogName Application -Source $EventLogSource -EventId 1000 -EntryType $eventType -Message $Message
+        } catch {
+            # Event Log write failed (e.g. restricted ACL on hardened host). File log entry already written — non-fatal.
+            Write-Warning "SnapCert: Could not write to Windows Event Log: $_"
         }
-        if (-not [System.Diagnostics.EventLog]::SourceExists($EventLogSource)) {
-            New-EventLog -LogName Application -Source $EventLogSource -ErrorAction SilentlyContinue
-        }
-        Write-EventLog -LogName Application -Source $EventLogSource -EventId 1000 -EntryType $eventType -Message $Message
     }
 }
 
@@ -49,17 +54,27 @@ function Invoke-SnapCertLogRotation {
 
     $retained = $lines | Where-Object {
         if ($_ -match '^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})') {
-            $lineDate = [datetime]::ParseExact($Matches[1], "yyyy-MM-dd HH:mm:ss", $null)
-            $lineDate -ge $cutoff
+            $lineDate = [datetime]::MinValue
+            if ([datetime]::TryParseExact($Matches[1], "yyyy-MM-dd HH:mm:ss", $null, [System.Globalization.DateTimeStyles]::None, [ref]$lineDate)) {
+                $lineDate -ge $cutoff
+            } else {
+                $true  # unparseable timestamp — preserve the line
+            }
         } else {
-            $true  # preserve lines that don't match the timestamp pattern
+            $true  # no timestamp prefix — preserve the line
         }
     }
 
-    if ($retained) {
-        $retained | Set-Content $LogFilePath -Encoding UTF8
-    } else {
-        Clear-Content $LogFilePath
+    $tempPath = "$LogFilePath.tmp"
+    try {
+        if ($retained) {
+            $retained | Set-Content $tempPath -Encoding UTF8
+        } else {
+            Set-Content $tempPath -Value $null -Encoding UTF8
+        }
+        Move-Item -Path $tempPath -Destination $LogFilePath -Force
+    } finally {
+        if (Test-Path $tempPath) { Remove-Item $tempPath -Force -ErrorAction SilentlyContinue }
     }
 }
 

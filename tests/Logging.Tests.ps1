@@ -8,6 +8,10 @@ Describe "Write-SnapCertLog" {
     }
     AfterEach {
         if (Test-Path $script:testLogPath) { Remove-Item $script:testLogPath -Force }
+        $logDir = Split-Path $script:testLogPath -Parent
+        if ((Test-Path $logDir) -and ($logDir -ne $env:TEMP)) {
+            Remove-Item $logDir -Force -Recurse -ErrorAction SilentlyContinue
+        }
     }
 
     It "creates log file if it does not exist" {
