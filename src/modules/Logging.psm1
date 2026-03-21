@@ -33,7 +33,7 @@ function Write-SnapCertLog {
             if (-not [System.Diagnostics.EventLog]::SourceExists($EventLogSource)) {
                 New-EventLog -LogName Application -Source $EventLogSource -ErrorAction Stop
             }
-            Write-EventLog -LogName Application -Source $EventLogSource -EventId 1000 -EntryType $eventType -Message $Message
+            Write-EventLog -LogName Application -Source $EventLogSource -EventId 1000 -EntryType $eventType -Message $Message -ErrorAction Stop
         } catch {
             # Event Log write failed (e.g. restricted ACL on hardened host). File log entry already written — non-fatal.
             Write-Warning "SnapCert: Could not write to Windows Event Log: $_"
